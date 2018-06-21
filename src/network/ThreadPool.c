@@ -42,7 +42,8 @@ int swThreadPool_create(swThreadPool *pool, int thread_num)
         return SW_ERR;
     }
 #else
-    if (swRingQueue_init(&pool->queue, SW_THREADPOOL_QUEUE_LEN) < 0)
+    int size = SwooleG.max_sockets >= SW_THREADPOOL_QUEUE_LEN ? SwooleG.max_sockets + 1 : SW_THREADPOOL_QUEUE_LEN;
+    if (swRingQueue_init(&pool->queue, size) < 0)
     {
         return SW_ERR;
     }
@@ -69,7 +70,7 @@ int swThreadPool_dispatch(swThreadPool *pool, void *task, int task_len)
 
     if (ret < 0)
     {
-        SwooleG.error = EAGAIN;
+        swoole_error_log(SW_LOG_ERROR, SW_ERROR_QUEUE_FULL, "the queue of thread pool is full.");
         return SW_ERR;
     }
 
@@ -132,6 +133,12 @@ static void* swThreadPool_loop(void *arg)
     int ret;
     void *task;
 
+    SwooleTG.buffer_stack = swString_new(8192);
+    if (SwooleTG.buffer_stack == NULL)
+    {
+        return NULL;
+    }
+
     if (pool->onStart)
     {
         pool->onStart(pool, id);
@@ -172,6 +179,7 @@ static void* swThreadPool_loop(void *arg)
         pool->onStop(pool, id);
     }
 
+    swString_free(SwooleTG.buffer_stack);
     pthread_exit(NULL);
     return NULL;
 }

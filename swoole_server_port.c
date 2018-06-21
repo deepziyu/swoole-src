@@ -64,6 +64,11 @@ void swoole_server_port_init(int module_number TSRMLS_DC)
     swoole_server_port_class_entry_ptr = zend_register_internal_class(&swoole_server_port_ce TSRMLS_CC);
     SWOOLE_CLASS_ALIAS(swoole_server_port, "Swoole\\Server\\Port");
 
+    if (SWOOLE_G(use_shortname))
+    {
+        sw_zend_register_class_alias("Co\\Server\\Port", swoole_server_port_class_entry_ptr);
+    }
+
     zend_declare_property_null(swoole_server_port_class_entry_ptr, ZEND_STRL("onConnect"), ZEND_ACC_PUBLIC TSRMLS_CC);
     zend_declare_property_null(swoole_server_port_class_entry_ptr, ZEND_STRL("onReceive"), ZEND_ACC_PUBLIC TSRMLS_CC);
     zend_declare_property_null(swoole_server_port_class_entry_ptr, ZEND_STRL("onClose"), ZEND_ACC_PUBLIC TSRMLS_CC);
@@ -512,7 +517,9 @@ static PHP_METHOD(swoole_server_port, on)
     zend_size_t len, i;
     zval *cb;
 
-    if (SwooleGS->start > 0)
+    swoole_server_port_property *property = swoole_get_property(getThis(), 0);
+    swServer *serv = property->serv;
+    if (serv->gs->start > 0)
     {
         swoole_php_fatal_error(E_WARNING, "can't register event callback function after server started.");
         RETURN_FALSE;
@@ -532,8 +539,6 @@ static PHP_METHOD(swoole_server_port, on)
         return;
     }
     efree(func_name);
-
-    swoole_server_port_property *property = swoole_get_property(getThis(), 0);
 
     swListenPort *port = swoole_get_object(getThis());
     if (!port->ptr)
@@ -584,25 +589,25 @@ static PHP_METHOD(swoole_server_port, on)
             property->callbacks[i] = sw_zend_read_property(swoole_server_port_class_entry_ptr, getThis(), property_name, l_property_name, 0 TSRMLS_CC);
             sw_copy_to_stack(property->callbacks[i], property->_callbacks[i]);
 
-            if (i == SW_SERVER_CB_onConnect && SwooleG.serv->onConnect == NULL)
+            if (i == SW_SERVER_CB_onConnect && serv->onConnect == NULL)
             {
-                SwooleG.serv->onConnect = php_swoole_onConnect;
+                serv->onConnect = php_swoole_onConnect;
             }
-            else if (i == SW_SERVER_CB_onPacket && SwooleG.serv->onPacket == NULL)
+            else if (i == SW_SERVER_CB_onPacket && serv->onPacket == NULL)
             {
-                SwooleG.serv->onPacket = php_swoole_onPacket;
+                serv->onPacket = php_swoole_onPacket;
             }
-            else if (i == SW_SERVER_CB_onClose && SwooleG.serv->onClose == NULL)
+            else if (i == SW_SERVER_CB_onClose && serv->onClose == NULL)
             {
-                SwooleG.serv->onClose = php_swoole_onClose;
+                serv->onClose = php_swoole_onClose;
             }
-            else if (i == SW_SERVER_CB_onBufferFull && SwooleG.serv->onBufferFull == NULL)
+            else if (i == SW_SERVER_CB_onBufferFull && serv->onBufferFull == NULL)
             {
-                SwooleG.serv->onBufferFull = php_swoole_onBufferFull;
+                serv->onBufferFull = php_swoole_onBufferFull;
             }
-            else if (i == SW_SERVER_CB_onBufferEmpty && SwooleG.serv->onBufferEmpty == NULL)
+            else if (i == SW_SERVER_CB_onBufferEmpty && serv->onBufferEmpty == NULL)
             {
-                SwooleG.serv->onBufferEmpty = php_swoole_onBufferEmpty;
+                serv->onBufferEmpty = php_swoole_onBufferEmpty;
             }
             property->caches[i] = func_cache;
             break;

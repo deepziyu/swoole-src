@@ -26,18 +26,18 @@ typedef struct _swChannel_item
 
 swChannel* swChannel_new(size_t size, int maxlen, int flags)
 {
-    assert(size >= maxlen + sizeof(swChannel));
+    assert(size >= maxlen);
     int ret;
     void *mem;
 
     //use shared memory
     if (flags & SW_CHAN_SHM)
     {
-        mem = sw_shm_malloc(size);
+        mem = sw_shm_malloc(size + sizeof(swChannel));
     }
     else
     {
-        mem = sw_malloc(size);
+        mem = sw_malloc(size + sizeof(swChannel));
     }
 
     if (mem == NULL)
@@ -51,8 +51,7 @@ swChannel* swChannel_new(size_t size, int maxlen, int flags)
     bzero(object, sizeof(swChannel));
 
     //overflow space
-    object->size = size - maxlen;
-    object->capacity = size - sizeof(swChannel);
+    object->size = size;
     object->mem = mem;
     object->maxlen = maxlen;
     object->flag = flags;
@@ -145,6 +144,27 @@ int swChannel_out(swChannel *object, void *out, int buffer_length)
 }
 
 /**
+ * peek data
+ */
+int swChannel_peek(swChannel *object, void *out, int buffer_length)
+{
+    if (swChannel_empty(object))
+    {
+        return SW_ERR;
+    }
+
+    int length;
+    object->lock.lock(&object->lock);
+    swChannel_item *item = object->mem + object->head;
+    assert(buffer_length >= item->length);
+    memcpy(out, item->data, item->length);
+    length = item->length;
+    object->lock.unlock(&object->lock);
+
+    return length;
+}
+
+/**
  * wait notify
  */
 int swChannel_wait(swChannel *object)
@@ -221,10 +241,9 @@ void swChannel_print(swChannel *chan)
             "    char tail_tag = %d;\n"
             "    int num = %d;\n"
             "    size_t bytes = %ld;\n"
-            "    size_t capacity = %ld;\n"
             "    int flag = %d;\n"
             "    int maxlen = %d;\n"
-            "\n}\n", chan->head, chan->tail, chan->size, chan->tail_tag, chan->head_tag, chan->num, chan->bytes,
-            chan->capacity, chan->flag, chan->maxlen);
+            "\n}\n", (long)chan->head, (long)chan->tail, chan->size, chan->tail_tag, chan->head_tag, chan->num, chan->bytes,
+            chan->flag, chan->maxlen);
 }
 

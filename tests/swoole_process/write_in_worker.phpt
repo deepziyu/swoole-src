@@ -1,15 +1,16 @@
 --TEST--
 swoole_process: write in worker
 --SKIPIF--
-<?php require __DIR__ . "/../include/skipif.inc"; ?>
+<?php require __DIR__ . '/../include/skipif.inc'; ?>
 --INI--
 assert.active=1
 assert.warning=1
 assert.bail=0
 assert.quiet_eval=0
-
 --FILE--
 <?php
+require_once __DIR__ . '/../include/bootstrap.php';
+
 $serv = new \swoole_server('127.0.0.1', 9501);
 $process = new \Swoole\Process(function ($process) use ($serv) {
     sleep(1);
@@ -41,4 +42,6 @@ $serv->addProcess($process);
 $serv->start();
 ?>
 --EXPECT--
-SUCCESS
+worker end
+process start
+process end

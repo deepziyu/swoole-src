@@ -718,11 +718,21 @@ static void http_client_onReceive(swClient *cli, char *data, uint32_t length)
     if (http->upgrade)
     {
         cli->open_length_check = 1;
-        swString_clear(cli->buffer);
         cli->protocol.get_package_length = swWebSocket_get_package_length;
         cli->protocol.onPackage = http_client_onMessage;
         cli->protocol.package_length_size = SW_WEBSOCKET_HEADER_LEN + SW_WEBSOCKET_MASK_LEN + sizeof(uint64_t);
         http->state = HTTP_CLIENT_STATE_UPGRADE;
+
+        //data frame
+        if (length > parsed_n)
+        {
+            cli->buffer->length = length - parsed_n - 1;
+            memmove(cli->buffer->str, data + parsed_n + 1, cli->buffer->length);
+        }
+        else
+        {
+            swString_clear(cli->buffer);
+        }
     }
     else if (http->keep_alive == 1)
     {
@@ -773,6 +783,14 @@ static void http_client_onReceive(swClient *cli, char *data, uint32_t length)
         return;
     }
     http->header_completed = 0;
+
+    if (http->upgrade && cli->buffer->length > 0)
+    {
+        cli->socket->skip_recv = 1;
+        swProtocol_recv_check_length(&cli->protocol, cli->socket, cli->buffer);
+        return;
+    }
+
     swString_clear(cli->buffer);
     if (http->keep_alive == 0 && http->state != HTTP_CLIENT_STATE_WAIT_CLOSE)
     {
@@ -910,6 +928,10 @@ static int http_client_send_http_request(zval *zobject TSRMLS_DC)
                 continue;
             }
             convert_to_string(value);
+            if (Z_STRLEN_P(value) == 0)
+            {
+                continue;
+            }
             http_client_swString_append_headers(http_client_buffer, key, keylen, Z_STRVAL_P(value), Z_STRLEN_P(value));
         SW_HASHTABLE_FOREACH_END();
     }
@@ -1071,6 +1093,10 @@ static int http_client_send_http_request(zval *zobject TSRMLS_DC)
                 {
                     continue;
                 }
+                if (sw_zend_hash_find(Z_ARRVAL_P(value), ZEND_STRS("size"), (void **) &zsize) == FAILURE)
+                {
+                    continue;
+                }
                 if (sw_zend_hash_find(Z_ARRVAL_P(value), ZEND_STRS("type"), (void **) &ztype) == FAILURE)
                 {
                     continue;
@@ -1107,10 +1133,6 @@ static int http_client_send_http_request(zval *zobject TSRMLS_DC)
         {
             goto send_fail;
         }
-        else
-        {
-            return SW_OK;
-        }
     }
     //x-www-form-urlencoded or raw
     else if (post_data && !ZVAL_IS_NULL(post_data))
@@ -1119,25 +1141,28 @@ static int http_client_send_http_request(zval *zobject TSRMLS_DC)
         {
             zend_size_t len;
             http_client_swString_append_headers(http_client_buffer, ZEND_STRL("Content-Type"), ZEND_STRL("application/x-www-form-urlencoded"));
-            smart_str formstr_s = { 0 };
-            char *formstr = sw_http_build_query(post_data, &len, &formstr_s TSRMLS_CC);
-            if (formstr == NULL)
+            if (php_swoole_array_length(post_data) > 0) //if it's an empty array, http build will fail
             {
-                swoole_php_error(E_WARNING, "http_build_query failed.");
-                return SW_ERR;
+                smart_str formstr_s = { 0 };
+                char *formstr = sw_http_build_query(post_data, &len, &formstr_s TSRMLS_CC);
+                if (formstr == NULL)
+                {
+                    swoole_php_error(E_WARNING, "http_build_query failed.");
+                    return SW_ERR;
+                }
+                http_client_append_content_length(http_client_buffer, len);
+                swString_append_ptr(http_client_buffer, formstr, len);
+                smart_str_free(&formstr_s);
             }
-            http_client_append_content_length(http_client_buffer, len);
-            //send http header
+            else
+            {
+                http_client_append_content_length(http_client_buffer, 0);
+            }
+            //send http header and body
             if ((ret = http->cli->send(http->cli, http_client_buffer->str, http_client_buffer->length, 0)) < 0)
             {
                 goto send_fail;
             }
-            //send http body
-            if ((ret = http->cli->send(http->cli, formstr, len, 0)) < 0)
-            {
-                goto send_fail;
-            }
-            smart_str_free(&formstr_s);
             //cleanup request body
             zend_update_property_null(swoole_http_client_class_entry_ptr, zobject, ZEND_STRL("requestBody") TSRMLS_CC);
         }

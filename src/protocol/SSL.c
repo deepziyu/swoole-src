@@ -673,7 +673,7 @@ int swSSL_accept(swConnection *conn)
     {
         return SW_ERROR;
     }
-    swWarn("SSL_do_handshake() failed. Error: [%ld|%d].", err, errno);
+    swWarn("SSL_do_handshake() failed. Error: %s[%ld|%d].", strerror(errno), err, errno);
     return SW_ERROR;
 }
 
@@ -685,6 +685,13 @@ int swSSL_connect(swConnection *conn)
         conn->ssl_state = SW_SSL_STATE_READY;
         conn->ssl_want_read = 0;
         conn->ssl_want_write = 0;
+
+#ifdef SW_LOG_TRACE_OPEN
+        const char *ssl_version = SSL_get_version(conn->ssl);
+        const char *ssl_cipher = SSL_get_cipher_name(conn->ssl);
+        swTraceLog(SW_TRACE_SSL, "connected (%s %s)", ssl_version, ssl_cipher);
+#endif
+
         return SW_OK;
     }
 
@@ -703,7 +710,21 @@ int swSSL_connect(swConnection *conn)
         conn->ssl_state = SW_SSL_STATE_WAIT_STREAM;
         return SW_OK;
     }
-    swWarn("SSL_connect() failed. Error: %s[%ld]", ERR_reason_error_string(err), err);
+    else if (err == SSL_ERROR_ZERO_RETURN)
+    {
+        swDebug("SSL_connect(fd=%d) closed.", conn->fd);
+        return SW_ERR;
+    }
+    else if (err == SSL_ERROR_SYSCALL)
+    {
+        if (n)
+        {
+            SwooleG.error = errno;
+            return SW_ERR;
+        }
+    }
+    swWarn("SSL_connect(fd=%d) failed. Error: %s[%ld|%d].", conn->fd, ERR_reason_error_string(err), err, errno);
+
     return SW_ERR;
 }
 
@@ -720,12 +741,16 @@ int swSSL_sendfile(swConnection *conn, int fd, off_t *offset, size_t size)
         ret = swSSL_send(conn, buf, n);
         if (ret < 0)
         {
-            swSysError("write() failed.");
+            if (swConnection_error(errno) == SW_ERROR)
+            {
+                swSysError("write() failed.");
+            }
         }
         else
         {
             *offset += ret;
         }
+        swTraceLog(SW_TRACE_REACTOR, "fd=%d, readn=%d, n=%d, ret=%d", fd, readn, n, ret);
         return ret;
     }
     else

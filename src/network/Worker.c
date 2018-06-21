@@ -262,11 +262,12 @@ static int swWorker_onStreamPackage(swConnection *conn, char *data, uint32_t len
     swServer *serv = SwooleG.serv;
     swEventData *task = (swEventData *) (data + 4);
 
+    serv->last_stream_fd = conn->fd;
+
     swString *package = swWorker_get_buffer(serv, task->info.from_id);
     uint32_t data_length = length - sizeof(task->info) - 4;
     //merge data to package buffer
-    memcpy(package->str, data + sizeof(task->info) + 4, data_length);
-    package->length = data_length;
+    swString_append_ptr(package, data + sizeof(task->info) + 4, data_length);
 
     swWorker_onTask(&serv->factory, task);
 
@@ -287,6 +288,7 @@ int swWorker_onTask(swFactory *factory, swEventData *task)
 #endif
 
     factory->last_from_id = task->info.from_id;
+    serv->last_session_id = task->info.fd;
     swWorker *worker = SwooleWG.worker;
     //worker busy
     worker->status = SW_WORKER_BUSY;
@@ -304,12 +306,18 @@ int swWorker_onTask(swFactory *factory, swEventData *task)
         }
         do_task:
         {
-            worker->request_time = SwooleGS->now;
+            worker->request_time = serv->gs->now;
+#ifdef SW_BUFFER_RECV_TIME
+            serv->last_receive_usec = task->info.time;
+#endif
             serv->onReceive(serv, task);
             worker->request_time = 0;
+#ifdef SW_BUFFER_RECV_TIME
+            serv->last_receive_usec = 0;
+#endif
             worker->traced = 0;
             worker->request_count++;
-            sw_atomic_fetch_add(&SwooleStats->request_count, 1);
+            sw_atomic_fetch_add(&serv->stats->request_count, 1);
         }
         if (task->info.type == SW_EVENT_PACKAGE_END)
         {
@@ -326,10 +334,11 @@ int swWorker_onTask(swFactory *factory, swEventData *task)
             break;
         }
         package = swWorker_get_buffer(serv, task->info.from_id);
-        //merge data to package buffer
-        memcpy(package->str + package->length, task->data, task->info.len);
-        package->length += task->info.len;
-
+        if (task->info.len > 0)
+        {
+            //merge data to package buffer
+            swString_append_ptr(package, task->data, task->info.len);
+        }
         //package end
         if (task->info.type == SW_EVENT_PACKAGE_END)
         {
@@ -353,8 +362,18 @@ int swWorker_onTask(swFactory *factory, swEventData *task)
         if (package->offset == package->length - sizeof(swDgramPacket))
         {
             worker->request_count++;
-            sw_atomic_fetch_add(&SwooleStats->request_count, 1);
+            worker->request_time = serv->gs->now;
+#ifdef SW_BUFFER_RECV_TIME
+            serv->last_receive_usec = task->info.time;
+#endif
+            sw_atomic_fetch_add(&serv->stats->request_count, 1);
             serv->onPacket(serv, task);
+            worker->request_time = 0;
+#ifdef SW_BUFFER_RECV_TIME
+            serv->last_receive_usec = 0;
+#endif
+            worker->traced = 0;
+            worker->request_count++;
             swString_clear(package);
         }
         break;
@@ -364,7 +383,7 @@ int swWorker_onTask(swFactory *factory, swEventData *task)
         conn = swServer_connection_verify_no_ssl(serv, task->info.fd);
         if (conn && conn->ssl_client_cert.length > 0)
         {
-            free(conn->ssl_client_cert.str);
+            sw_free(conn->ssl_client_cert.str);
             bzero(&conn->ssl_client_cert, sizeof(conn->ssl_client_cert.str));
         }
 #endif
@@ -494,7 +513,7 @@ void swWorker_onStart(swServer *serv)
     SwooleWG.worker = swServer_get_worker(serv, SwooleWG.id);
 
     int i;
-    for (i = 0; i < serv->worker_num + SwooleG.task_worker_num; i++)
+    for (i = 0; i < serv->worker_num + serv->task_worker_num; i++)
     {
         worker = swServer_get_worker(serv, i);
         if (SwooleWG.id == i)
@@ -511,6 +530,7 @@ void swWorker_onStart(swServer *serv)
         }
     }
 
+    SwooleWG.worker->status = SW_WORKER_IDLE;
     sw_shm_protect(serv->session_list, PROT_READ);
 
     if (serv->onWorkerStart)
@@ -531,6 +551,7 @@ static void swWorker_stop()
 {
     swWorker *worker = SwooleWG.worker;
     swServer *serv = SwooleG.serv;
+    worker->status = SW_WORKER_BUSY;
 
     /**
      * force to end
@@ -552,6 +573,13 @@ static void swWorker_stop()
     if (worker->pipe_worker)
     {
         swReactor_remove_read_event(SwooleG.main_reactor, worker->pipe_worker);
+    }
+
+    if (serv->stream_fd > 0)
+    {
+        SwooleG.main_reactor->del(SwooleG.main_reactor, serv->stream_fd);
+        close(serv->stream_fd);
+        serv->stream_fd = 0;
     }
 
     if (serv->onWorkerStop)
@@ -589,7 +617,7 @@ static void swWorker_stop()
     }
     else
     {
-        kill(SwooleGS->manager_pid, SIGIO);
+        kill(serv->gs->manager_pid, SIGIO);
     }
 
     try_to_exit: SwooleWG.wait_exit = 1;
@@ -665,7 +693,7 @@ void swWorker_clean(void)
     swServer *serv = SwooleG.serv;
     swWorker *worker;
 
-    for (i = 0; i < serv->worker_num + SwooleG.task_worker_num; i++)
+    for (i = 0; i < serv->worker_num + serv->task_worker_num; i++)
     {
         worker = swServer_get_worker(serv, i);
         if (SwooleG.main_reactor)
@@ -734,7 +762,7 @@ int swWorker_loop(swFactory *factory, int worker_id)
      */
     int i;
     swConnection *pipe_socket;
-    for (i = 0; i < serv->worker_num + SwooleG.task_worker_num; i++)
+    for (i = 0; i < serv->worker_num + serv->task_worker_num; i++)
     {
         worker = swServer_get_worker(serv, i);
         pipe_socket = swReactor_get(SwooleG.main_reactor, worker->pipe_master);

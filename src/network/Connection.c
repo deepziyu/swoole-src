@@ -68,18 +68,21 @@ int swConnection_onSendfile(swConnection *conn, swBuffer_trunk *chunk)
         ret = swoole_sendfile(conn->fd, task->fd, &task->offset, sendn);
     }
 
-    swTrace("ret=%d|task->offset=%ld|sendn=%d|filesize=%ld", ret, task->offset, sendn, task->length);
+    swTrace("ret=%d|task->offset=%ld|sendn=%d|filesize=%ld", ret, (long)task->offset, sendn, task->length);
 
     if (ret <= 0)
     {
         switch (swConnection_error(errno))
         {
         case SW_ERROR:
-            swSysError("sendfile(%s, %ld, %d) failed.", task->filename, task->offset, sendn);
+            swSysError("sendfile(%s, %ld, %d) failed.", task->filename, (long)task->offset, sendn);
             swBuffer_pop_trunk(conn->out_buffer, chunk);
             return SW_OK;
         case SW_CLOSE:
             conn->close_wait = 1;
+            return SW_ERR;
+        case SW_WAIT:
+            conn->send_wait = 1;
             return SW_ERR;
         default:
             break;

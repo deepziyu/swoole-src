@@ -244,21 +244,24 @@ void php_swoole_event_wait()
 #endif
 
 #ifdef SW_COROUTINE
-        if (swReactorCheckPoint == NULL)
+        if (COROG.active == 0)
         {
             coro_init(TSRMLS_C);
         }
 #endif
-
-        int ret = SwooleG.main_reactor->wait(SwooleG.main_reactor, NULL);
-        if (ret < 0)
+        if (!swReactor_empty(SwooleG.main_reactor))
         {
-            swoole_php_fatal_error(E_ERROR, "reactor wait failed. Error: %s [%d]", strerror(errno), errno);
+            int ret = SwooleG.main_reactor->wait(SwooleG.main_reactor, NULL);
+            if (ret < 0)
+            {
+                swoole_php_fatal_error(E_ERROR, "reactor wait failed. Error: %s [%d]", strerror(errno), errno);
+            }
         }
         if (SwooleG.timer.map)
         {
             php_swoole_clear_all_timer();
         }
+        SwooleWG.reactor_exit = 1;
     }
 }
 
@@ -454,6 +457,7 @@ PHP_FUNCTION(swoole_event_add)
     swConnection *socket = swReactor_get(SwooleG.main_reactor, socket_fd);
     socket->object = reactor_fd;
     socket->active = 1;
+    socket->nonblock = 1;
 
     RETURN_LONG(socket_fd);
 }
@@ -463,13 +467,7 @@ PHP_FUNCTION(swoole_event_write)
     zval *zfd;
     char *data;
     zend_size_t len;
-    
-    if (!SwooleG.main_reactor)
-    {
-        swoole_php_fatal_error(E_WARNING, "reactor no ready, cannot swoole_event_write.");
-        RETURN_FALSE;
-    }
-    
+
     if (zend_parse_parameters(ZEND_NUM_ARGS() TSRMLS_CC, "zs", &zfd, &data, &len) == FAILURE)
     {
         return;
@@ -488,6 +486,7 @@ PHP_FUNCTION(swoole_event_write)
         RETURN_FALSE;
     }
 
+    php_swoole_check_reactor();
     if (SwooleG.main_reactor->write(SwooleG.main_reactor, socket_fd, data, len) < 0)
     {
         RETURN_FALSE;
@@ -506,7 +505,6 @@ PHP_FUNCTION(swoole_event_set)
 
     char *func_name = NULL;
     long event_flag = 0;
-    
     if (!SwooleG.main_reactor)
     {
         swoole_php_fatal_error(E_WARNING, "reactor no ready, cannot swoole_event_set.");
@@ -605,13 +603,13 @@ PHP_FUNCTION(swoole_event_set)
 PHP_FUNCTION(swoole_event_del)
 {
     zval *zfd;
-    
+
     if (!SwooleG.main_reactor)
     {
         swoole_php_fatal_error(E_WARNING, "reactor no ready, cannot swoole_event_del.");
         RETURN_FALSE;
     }
-    
+
     if (zend_parse_parameters(ZEND_NUM_ARGS() TSRMLS_CC, "z", &zfd) == FAILURE)
     {
         return;
@@ -638,29 +636,10 @@ PHP_FUNCTION(swoole_event_del)
 
 PHP_FUNCTION(swoole_event_defer)
 {
-    if (!SwooleG.main_reactor)
-    {
-        swoole_php_fatal_error(E_WARNING, "reactor no ready, cannot swoole_event_defer.");
-        RETURN_FALSE;
-    }
-
     zval *callback;
     if (zend_parse_parameters(ZEND_NUM_ARGS() TSRMLS_CC, "z", &callback) == FAILURE)
     {
         return;
-    }
-
-    //the event loop is not started
-    if (SwooleG.main_reactor->start == 0)
-    {
-        if (php_swoole_add_timer(1, callback, NULL, 0 TSRMLS_CC) < 0)
-        {
-            RETURN_FALSE;
-        }
-        else
-        {
-            RETURN_TRUE;
-        }
     }
 
     char *func_name;
@@ -671,6 +650,14 @@ PHP_FUNCTION(swoole_event_defer)
         RETURN_FALSE;
     }
     efree(func_name);
+
+    php_swoole_check_reactor();
+
+    //the event loop is not started
+    if (SwooleG.main_reactor->start == 0)
+    {
+        SW_CHECK_RETURN (php_swoole_add_timer(1, callback, NULL, 0 TSRMLS_CC));
+    }
 
     php_defer_callback *defer = emalloc(sizeof(php_defer_callback));
 
@@ -693,7 +680,9 @@ PHP_FUNCTION(swoole_event_cycle)
     }
 
     zval *callback;
-    if (zend_parse_parameters(ZEND_NUM_ARGS() TSRMLS_CC, "z", &callback) == FAILURE)
+    zend_bool before = 0;
+
+    if (zend_parse_parameters(ZEND_NUM_ARGS() TSRMLS_CC, "z|b", &callback, &before) == FAILURE)
     {
         return;
     }
@@ -722,11 +711,6 @@ PHP_FUNCTION(swoole_event_cycle)
     }
     efree(func_name);
 
-    if (SwooleG.main_reactor->idle_task.data != NULL)
-    {
-        SwooleG.main_reactor->defer(SwooleG.main_reactor, free_callback, SwooleG.main_reactor->idle_task.data);
-    }
-
     php_defer_callback *cb = emalloc(sizeof(php_defer_callback));
 
 #if PHP_MAJOR_VERSION >= 7
@@ -737,8 +721,28 @@ PHP_FUNCTION(swoole_event_cycle)
 #endif
     sw_zval_add_ref(&callback);
 
-    SwooleG.main_reactor->idle_task.callback = php_swoole_event_onEndCallback;
-    SwooleG.main_reactor->idle_task.data = cb;
+    if (before == 0)
+    {
+        if (SwooleG.main_reactor->idle_task.data != NULL)
+        {
+            SwooleG.main_reactor->defer(SwooleG.main_reactor, free_callback, SwooleG.main_reactor->idle_task.data);
+        }
+
+        SwooleG.main_reactor->idle_task.callback = php_swoole_event_onEndCallback;
+        SwooleG.main_reactor->idle_task.data = cb;
+    }
+    else
+    {
+        if (SwooleG.main_reactor->future_task.data != NULL)
+        {
+            SwooleG.main_reactor->defer(SwooleG.main_reactor, free_callback, SwooleG.main_reactor->future_task.data);
+        }
+
+        SwooleG.main_reactor->future_task.callback = php_swoole_event_onEndCallback;
+        SwooleG.main_reactor->future_task.data = cb;
+        //Registration onBegin callback function
+        swReactor_activate_future_task(SwooleG.main_reactor);
+    }
 
     RETURN_TRUE;
 }
@@ -762,4 +766,73 @@ PHP_FUNCTION(swoole_event_wait)
         return;
     }
     php_swoole_event_wait();
+}
+
+PHP_FUNCTION(swoole_event_dispatch)
+{
+    if (!SwooleG.main_reactor)
+    {
+        RETURN_FALSE;
+    }
+    SwooleG.main_reactor->once = 1;
+
+#ifdef HAVE_SIGNALFD
+    if (SwooleG.main_reactor->check_signalfd)
+    {
+        swSignalfd_setup(SwooleG.main_reactor);
+    }
+#endif
+
+#ifdef SW_COROUTINE
+    if (COROG.active == 0)
+    {
+        coro_init(TSRMLS_C);
+    }
+#endif
+
+    int ret = SwooleG.main_reactor->wait(SwooleG.main_reactor, NULL);
+    if (ret < 0)
+    {
+        swoole_php_fatal_error(E_ERROR, "reactor wait failed. Error: %s [%d]", strerror(errno), errno);
+    }
+
+    SwooleG.main_reactor->once = 0;
+    RETURN_TRUE;
+}
+
+PHP_FUNCTION(swoole_event_isset)
+{
+    if (!SwooleG.main_reactor)
+    {
+        RETURN_FALSE;
+    }
+
+    zval *zfd;
+    long events = SW_EVENT_READ | SW_EVENT_WRITE;
+
+    if (zend_parse_parameters(ZEND_NUM_ARGS() TSRMLS_CC, "z|l", &zfd, &events) == FAILURE)
+    {
+        return;
+    }
+
+    int socket_fd = swoole_convert_to_fd(zfd TSRMLS_CC);
+    if (socket_fd < 0)
+    {
+        swoole_php_fatal_error(E_WARNING, "unknow type.");
+        RETURN_FALSE;
+    }
+
+    swConnection *_socket = swReactor_get(SwooleG.main_reactor, socket_fd);
+    if (_socket == NULL || _socket->removed)
+    {
+        RETURN_FALSE;
+    }
+    if (_socket->events & events)
+    {
+        RETURN_TRUE;
+    }
+    else
+    {
+        RETURN_FALSE;
+    }
 }

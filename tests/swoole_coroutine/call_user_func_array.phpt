@@ -1,12 +1,14 @@
 --TEST--
 swoole_coroutine: call_user_func_array
 --SKIPIF--
-<?php require  __DIR__ . "/../include/skipif.inc"; ?>
+<?php require  __DIR__ . '/../include/skipif.inc'; ?>
 --FILE--
 <?php
+require_once __DIR__ . '/../include/bootstrap.php';
+
 class A {
 	public function foo() {
-		Swoole\Coroutine::call_user_func_array([$this, "bar"], []);
+		call_user_func_array([$this, "bar"], []);
 		echo "foo\n";
 	}
 	protected function bar() {
@@ -14,7 +16,7 @@ class A {
 	}
 }
 $a = new A;
-Swoole\Coroutine::call_user_func_array([$a, "foo"], []);
+call_user_func_array([$a, "foo"], []);
 ?>
 --EXPECT--
 bar

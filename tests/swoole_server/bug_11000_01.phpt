@@ -1,7 +1,7 @@
 --TEST--
-swoole_server: addProcess
+swoole_server: bug_11000_01
 --SKIPIF--
-<?php require __DIR__ . "/../include/skipif.inc"; ?>
+<?php require __DIR__ . '/../include/skipif.inc'; ?>
 --INI--
 assert.active=1
 assert.warning=1
@@ -10,9 +10,12 @@ assert.quiet_eval=0
 
 --FILE--
 <?php
-require_once __DIR__ . "/../include/swoole.inc";
+require_once __DIR__ . '/../include/bootstrap.php';
+require_once __DIR__ . '/../include/swoole.inc';
 
-$serv = new \swoole_server(TCP_SERVER_HOST, 9501);
+$port = get_one_free_port();
+
+$serv = new \swoole_server(TCP_SERVER_HOST, $port);
 $process = new \Swoole\Process(function ($process) use ($serv) {
     $s = $serv->stats();
     assert($s and is_array($s) and count($s) > 1);
