@@ -1975,7 +1975,7 @@ PHP_METHOD(swoole_server, __construct)
         swListenPort *port = swServer_add_port(serv, sock_type, serv_host, serv_port);
         if (!port)
         {
-            zend_throw_exception_ex(swoole_exception_class_entry_ptr, errno TSRMLS_CC, "failed to listen server port[%s:%d]. Error: %s[%d].",
+            zend_throw_exception_ex(swoole_exception_class_entry_ptr, errno TSRMLS_CC, "failed to listen server port[%s:%ld]. Error: %s[%d].",
                     serv_host, serv_port, strerror(errno), errno);
             return;
         }
@@ -2725,12 +2725,6 @@ PHP_METHOD(swoole_server, send)
     if (serv->gs->start == 0)
     {
         swoole_php_fatal_error(E_WARNING, "server is not running.");
-        RETURN_FALSE;
-    }
-
-    if (swIsMaster())
-    {
-        swoole_php_fatal_error(E_WARNING, "can't send data to the connections in master process.");
         RETURN_FALSE;
     }
 

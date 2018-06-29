@@ -995,6 +995,7 @@ try_again:
 
                 if (GC_IS_RECURSIVE(ht))
                 {
+                    ((SBucketType*) (buffer->buffer + p))->data_type = IS_NULL;//reset type null
                     php_error_docref(NULL TSRMLS_CC, E_NOTICE, "the array has cycle ref");
                 }
                 else
@@ -1328,6 +1329,7 @@ static void* swoole_unserialize_object(void *buffer, zval *return_value, zend_uc
                 {
                     d = Z_INDIRECT_P(d);
                 }
+                zval_dtor(d);
                 ZVAL_COPY(d, data);
             }
             else
@@ -1342,6 +1344,7 @@ static void* swoole_unserialize_object(void *buffer, zval *return_value, zend_uc
         {
             zend_hash_next_index_insert(Z_OBJPROP_P(return_value), data);
         }
+        (void)index;
     }
     ZEND_HASH_FOREACH_END();
     zval_dtor(&property);
@@ -1452,8 +1455,8 @@ PHPAPI zend_string* php_swoole_serialize(zval *zvalue)
     swoole_seria_dispatch(&str, zvalue); //serialize into a string
     zend_string *z_str = (zend_string *) str.buffer;
 
-    z_str->val[str.offset] = '\0';
     z_str->len = str.offset - _STR_HEADER_SIZE;
+    z_str->val[z_str->len] = '\0';
     z_str->h = 0;
     GC_SET_REFCOUNT(z_str, 1);
     GC_TYPE_INFO(z_str) = IS_STRING_EX;
